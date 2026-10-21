@@ -1,5 +1,5 @@
 // Lets the app open even without internet. Network first, so updates you push show up.
-const CACHE = 'my-weight-v1';
+const CACHE = 'my-weight-v2';
 const FILES = ['./', './index.html', './manifest.json', './apple-touch-icon.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

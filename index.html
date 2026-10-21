@@ -130,6 +130,15 @@ h1{margin:0;font-size:30px;letter-spacing:-.5px}
 .btn.primary{background:var(--accent);color:#fff}
 .btn.plain{background:var(--line)}
 .btn.danger{background:transparent;color:var(--bad)}
+.day-entries{margin:-2px 0 14px}
+.de-label{font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px}
+.de-row{display:flex;align-items:center;justify-content:space-between;width:100%;border:1.5px solid var(--line);background:var(--bg);border-radius:12px;padding:10px 12px;margin-bottom:6px;font-size:14px;text-align:left}
+.de-row.on{border-color:var(--accent);background:var(--accent-soft)}
+.de-time{font-weight:600;color:var(--muted)}
+.de-w{font-weight:700}
+.de-add{display:block;width:100%;text-align:center;color:var(--accent);font-weight:600;font-size:14px;background:var(--accent-soft);border:0;border-radius:12px;padding:10px 0;margin:2px 0 10px}
+.cal-count{position:absolute;top:2px;right:2px;background:var(--accent);color:#fff;font-size:9px;font-weight:700;border-radius:999px;min-width:14px;height:14px;line-height:14px;text-align:center;padding:0 2px}
+.day{position:relative}
 .set-group{border-top:1px solid var(--line);padding-top:14px;margin-top:6px}
 .hint{font-size:13px;color:var(--muted);margin:8px 2px 0}
 .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 24px);transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:10px 18px;border-radius:999px;font-weight:600;font-size:15px;opacity:0;transition:.25s;z-index:20;pointer-events:none;white-space:nowrap}
@@ -205,6 +214,10 @@ h1{margin:0;font-size:30px;letter-spacing:-.5px}
     <input type="date" id="inDate">
   </div>
   <div class="field">
+    <label for="inTime">Time</label>
+    <input type="time" id="inTime">
+  </div>
+  <div class="field">
     <label for="inW">Weight</label>
     <div class="stepper">
       <button type="button" id="wMinus" aria-label="Decrease">−</button>
@@ -216,6 +229,7 @@ h1{margin:0;font-size:30px;letter-spacing:-.5px}
     <label for="inNote">Note (optional)</label>
     <input id="inNote" type="text" placeholder="e.g. after walk, before breakfast" maxlength="80">
   </div>
+  <div class="day-entries" id="dayEntries" hidden></div>
   <button class="btn primary" id="btnSave">Save</button>
   <button class="btn danger" id="btnDel" hidden>Delete this entry</button>
 </div>
@@ -248,6 +262,8 @@ h1{margin:0;font-size:30px;letter-spacing:-.5px}
 (function(){
 const KEY='weightlog.v1';
 const $=s=>document.querySelector(s);
+const genId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const nowTime=()=>{const n=new Date();return pad2(n.getHours())+':'+pad2(n.getMinutes())};
 const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const MONTHS_LONG=['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -264,8 +280,21 @@ const esc=s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&q
 const num=v=>{const n=parseFloat(String(v).replace(',','.').trim());return isFinite(n)?n:NaN};
 
 /* ---------- storage ---------- */
+function migrateEntries(entries){
+  const out={};
+  for(const k of Object.keys(entries||{})){
+    const v=entries[k];
+    if(Array.isArray(v)){
+      out[k]=v.filter(e=>e&&+e.w>=20&&+e.w<=300).map(e=>({id:e.id||genId(),time:/^\d{2}:\d{2}$/.test(e.time)?e.time:'08:00',w:Math.round(+e.w*10)/10,note:String(e.note||'').slice(0,80)}));
+    }else if(v&&+v.w>=20&&+v.w<=300){
+      out[k]=[{id:genId(),time:'08:00',w:Math.round(+v.w*10)/10,note:String(v.note||'').slice(0,80)}];
+    }
+    if(out[k]&&!out[k].length) delete out[k];
+  }
+  return out;
+}
 function load(){
-  try{const s=JSON.parse(localStorage.getItem(KEY));if(s&&typeof s.entries==='object')return Object.assign({entries:{},goal:null,name:''},s)}catch(e){}
+  try{const s=JSON.parse(localStorage.getItem(KEY));if(s&&typeof s.entries==='object')return {entries:migrateEntries(s.entries),goal:s.goal!=null?+s.goal:null,name:s.name?String(s.name).slice(0,24):''}}catch(e){}
   return {entries:{},goal:null,name:''};
 }
 let state=load();
@@ -275,12 +304,21 @@ function save(){
 }
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
 
-const sorted=()=>Object.keys(state.entries).sort().map(k=>({date:k,w:state.entries[k].w,note:state.entries[k].note||''}));
+function dayEntries(date){return (state.entries[date]||[]).slice().sort((a,b)=>a.time<b.time?-1:a.time>b.time?1:0)}
+function flatAll(){
+  const out=[];
+  for(const date of Object.keys(state.entries).sort()) for(const e of dayEntries(date)) out.push({date,...e});
+  return out;
+}
+function dailyRep(){ // one point per day: that day's latest-time entry
+  return Object.keys(state.entries).sort().map(date=>{const list=dayEntries(date);const last=list[list.length-1];return {date,w:last.w,note:last.note,count:list.length}});
+}
+const sorted=dailyRep; // per-day representative list, used by chart/goal/calendar-summary logic
 
 /* ---------- helpers ---------- */
 function direction(){ // which way is "good" right now
-  const all=sorted(); if(state.goal==null||!all.length) return 0;
-  const L=all[all.length-1].w;
+  const flat=flatAll(); if(state.goal==null||!flat.length) return 0;
+  const L=flat[flat.length-1].w;
   if(L>state.goal+0.05) return -1; if(L<state.goal-0.05) return 1; return 0;
 }
 function cls(diff){const d=direction(); if(!d||Math.abs(diff)<0.05) return ''; return Math.sign(diff)===d?'good':'bad'}
@@ -302,26 +340,27 @@ function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show'
 function renderHero(){
   const hr=new Date().getHours();
   $('#hello').textContent=(hr<12?'Good morning':hr<17?'Good afternoon':'Good evening')+(state.name?`, ${state.name}`:'');
-  const all=sorted(), h=$('#hero');
-  $('#btnAdd').textContent=state.entries[todayStr()]?"✎  Update today's weight":"+  Add today's weight";
-  if(!all.length){
+  const flat=flatAll(), days=dailyRep(), h=$('#hero');
+  const todayCount=dayEntries(todayStr()).length;
+  $('#btnAdd').textContent=todayCount?"+  Add another entry today":"+  Add today's weight";
+  if(!flat.length){
     h.innerHTML=`<div class="welcome"><div class="wl-title">Welcome 👋</div><p>Weigh yourself, then tap the pink button below to save it. Your graph and calendar will fill in day by day.</p></div>`;
     return;
   }
-  const L=all[all.length-1],P=all.length>1?all[all.length-2]:null,F=all[0];
+  const L=flat[flat.length-1],P=flat.length>1?flat[flat.length-2]:null,F=flat[0],Fd=days[0];
   let chips='';
-  if(P) chips+=deltaChip(L.w-P.w,'since last');
-  if(all.length>2) chips+=deltaChip(L.w-F.w,`since ${relDay(F.date)}`);
+  if(P) chips+=deltaChip(L.w-P.w,P.date===L.date?'since last':'since last');
+  if(days.length>2) chips+=deltaChip(L.w-Fd.w,`since ${relDay(Fd.date)}`);
   let goal='';
   if(state.goal!=null){
-    const g=state.goal, wantDown=F.w>=g;
+    const g=state.goal, wantDown=Fd.w>=g;
     const reached=wantDown?L.w<=g+0.04:L.w>=g-0.04;
-    const total=Math.abs(F.w-g);
-    let pct=total<0.05?1:(wantDown?F.w-L.w:L.w-F.w)/total;
+    const total=Math.abs(Fd.w-g);
+    let pct=total<0.05?1:(wantDown?Fd.w-L.w:L.w-Fd.w)/total;
     pct=reached?1:Math.max(0,Math.min(1,pct));
     goal=`<div class="goal"><div class="goal-row"><span>Goal <b>${fmtW(g)} kg</b></span><span>${reached?'Goal reached 🎉':`<b>${fmtW(Math.abs(L.w-g))} kg</b> to go`}</span></div><div class="bar"><i style="width:${(pct*100).toFixed(1)}%"></i></div></div>`;
   }
-  h.innerHTML=`<div class="hero-label">Latest · ${relDay(L.date)}</div>
+  h.innerHTML=`<div class="hero-label">Latest · ${relDay(L.date)}${L.date===todayStr()?' · '+L.time:''}</div>
     <div class="big">${fmtW(L.w)}<span class="unit">kg</span></div>
     <div class="chips">${chips}</div>${goal}`;
 }
@@ -410,7 +449,7 @@ function renderChart(){
     hv.style.display='';$('#hvL').setAttribute('x1',p.x);$('#hvL').setAttribute('x2',p.x);
     $('#hvC').setAttribute('cx',p.x);$('#hvC').setAttribute('cy',p.y);
     const d=parse(p.e.date);
-    tip.innerHTML=`<b>${fmtW(p.e.w)} kg</b>${DAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+    tip.innerHTML=`<b>${fmtW(p.e.w)} kg</b>${DAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}${p.e.count>1?` (${p.e.count} entries)`:''}`;
     tip.hidden=false;
     const left=Math.max(52,Math.min(r.width-52,p.x*sc));
     tip.style.left=left+'px';
@@ -440,9 +479,10 @@ function renderCal(){
   for(let i=0;i<firstDow;i++) html+='<div></div>';
   const inMonth=[];
   for(let d=1;d<=days;d++){
-    const k=`${y}-${pad2(m+1)}-${pad2(d)}`,e=state.entries[k];
-    if(e) inMonth.push(e.w);
-    html+=`<button class="day${e?' has':''}${k===t?' today':''}" data-date="${k}" ${k>t?'disabled':''}><span class="dn">${d}</span>${e?`<span class="dw">${fmtW(e.w)}</span>`:''}</button>`;
+    const k=`${y}-${pad2(m+1)}-${pad2(d)}`,list=dayEntries(k);
+    const last=list[list.length-1];
+    if(last) inMonth.push(last.w);
+    html+=`<button class="day${last?' has':''}${k===t?' today':''}" data-date="${k}" ${k>t?'disabled':''}>${list.length>1?`<span class="cal-count">${list.length}</span>`:''}<span class="dn">${d}</span>${last?`<span class="dw">${fmtW(last.w)}</span>`:''}</button>`;
   }
   $('#calGrid').innerHTML=html;
   const ms=$('#monthStats');
@@ -457,15 +497,15 @@ function renderCal(){
 
 /* ---------- history ---------- */
 function renderHist(){
-  const all=sorted(),box=$('#histList');
+  const all=flatAll(),box=$('#histList');
   if(!all.length){box.innerHTML='<div class="empty">No entries yet.</div>';return}
   let html='',cur='';
   for(let i=all.length-1;i>=0;i--){
     const e=all[i],d=parse(e.date),mk=`${MONTHS_LONG[d.getMonth()]} ${d.getFullYear()}`;
     if(mk!==cur){cur=mk;html+=`<div class="list-head">${mk}</div>`}
     const diff=i>0?e.w-all[i-1].w:null;
-    html+=`<button class="row" data-date="${e.date}">
-      <div><div class="row-d">${DAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}</div>${e.note?`<div class="row-n">${esc(e.note)}</div>`:''}</div>
+    html+=`<button class="row" data-date="${e.date}" data-id="${e.id}">
+      <div><div class="row-d">${DAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} · ${e.time}</div>${e.note?`<div class="row-n">${esc(e.note)}</div>`:''}</div>
       <div class="row-r"><div class="row-w">${fmtW(e.w)} <small>kg</small></div>${diff==null?'':`<div class="dt ${cls(diff)}">${Math.abs(diff)<0.05?'no change':(diff<0?'▼ ':'▲ ')+fmtW(Math.abs(diff))}</div>`}</div>
     </button>`;
   }
@@ -500,45 +540,90 @@ function closeSheet(){
 $('#overlay').addEventListener('click',closeSheet);
 
 /* ---------- entry editor ---------- */
-function lastBefore(date){const all=sorted().filter(e=>e.date<=date);return all.length?all[all.length-1]:null}
-function fillEditor(){
-  const d=$('#inDate').value||todayStr(),e=state.entries[d];
-  const ref=e||lastBefore(d)||sorted().slice(-1)[0];
-  $('#inW').value=ref?fmtW(ref.w):'';
-  $('#inNote').value=e?(e.note||''):'';
-  $('#btnDel').hidden=!e;
-  $('#entryTitle').textContent=e?'Edit weight':'Add weight';
-  $('#entrySub').textContent=fmtLong(d);
+let currentEditId=null;
+function lastKnownBefore(date,time){
+  const flat=flatAll();
+  const before=flat.filter(e=>e.date<date||(e.date===date&&e.time<time));
+  if(before.length) return before[before.length-1].w;
+  return flat.length?flat[flat.length-1].w:null;
 }
-function openEditor(date){
+function renderDayList(d){
+  const box=$('#dayEntries'),list=dayEntries(d);
+  if(!list.length){box.hidden=true;box.innerHTML='';return}
+  box.hidden=false;
+  let html=`<div class="de-label">Entries on this day</div>`;
+  html+=list.map(e=>`<button type="button" class="de-row${e.id===currentEditId?' on':''}" data-id="${e.id}"><span class="de-time">${e.time}</span><span class="de-w">${fmtW(e.w)} kg</span></button>`).join('');
+  html+=`<button type="button" class="de-add" id="dayAddNew">+ Add another entry for this day</button>`;
+  box.innerHTML=html;
+}
+function fillEditor(){
+  const d=$('#inDate').value||todayStr();
+  const entry=currentEditId?dayEntries(d).find(e=>e.id===currentEditId):null;
+  if(entry){
+    $('#inTime').value=entry.time;
+    $('#inW').value=fmtW(entry.w);
+    $('#inNote').value=entry.note||'';
+    $('#btnDel').hidden=false;
+    $('#entryTitle').textContent='Edit weight';
+  }else{
+    currentEditId=null;
+    $('#inTime').value=d===todayStr()?nowTime():'08:00';
+    const ref=lastKnownBefore(d,$('#inTime').value);
+    $('#inW').value=ref!=null?fmtW(ref):'';
+    $('#inNote').value='';
+    $('#btnDel').hidden=true;
+    $('#entryTitle').textContent='Add weight';
+  }
+  $('#entrySub').textContent=fmtLong(d);
+  renderDayList(d);
+}
+function openEditor(date,id){
   const inD=$('#inDate');inD.max=todayStr();inD.value=date||todayStr();
+  currentEditId=id||null;
   fillEditor();openSheet('sheetEntry');
 }
-$('#inDate').addEventListener('change',()=>{if($('#inDate').value>todayStr())$('#inDate').value=todayStr();fillEditor()});
+$('#inDate').addEventListener('change',()=>{if($('#inDate').value>todayStr())$('#inDate').value=todayStr();currentEditId=null;fillEditor()});
+$('#dayEntries').addEventListener('click',e=>{
+  const row=e.target.closest('.de-row');
+  if(row){currentEditId=row.dataset.id;fillEditor();return}
+  if(e.target.closest('#dayAddNew')){currentEditId=null;fillEditor()}
+});
 function stepW(delta){
   const cur=num($('#inW').value);
-  const base=isNaN(cur)?(sorted().slice(-1)[0]||{w:60}).w:cur;
+  const base=isNaN(cur)?(lastKnownBefore(todayStr(),nowTime())||60):cur;
   $('#inW').value=fmtW(Math.max(20,base+delta));
 }
 $('#wMinus').addEventListener('click',()=>stepW(-0.1));
 $('#wPlus').addEventListener('click',()=>stepW(0.1));
 $('#inW').addEventListener('focus',e=>setTimeout(()=>{try{e.target.setSelectionRange(0,e.target.value.length)}catch(_){}},30));
 $('#btnSave').addEventListener('click',()=>{
-  const d=$('#inDate').value,w=num($('#inW').value);
+  const d=$('#inDate').value,w=num($('#inW').value),t=$('#inTime').value||nowTime();
   if(!d||d>todayStr()){toast('Please pick a valid date');return}
   if(!(w>=20&&w<=300)){toast('Please enter a weight in kg');return}
-  state.entries[d]={w:Math.round(w*10)/10,note:$('#inNote').value.trim()};
+  const list=(state.entries[d]||[]).slice();
+  const note=$('#inNote').value.trim();
+  if(currentEditId){
+    const i=list.findIndex(e=>e.id===currentEditId);
+    if(i>-1) list[i]={...list[i],time:t,w:Math.round(w*10)/10,note};
+  }else{
+    currentEditId=genId();
+    list.push({id:currentEditId,time:t,w:Math.round(w*10)/10,note});
+  }
+  state.entries[d]=list;
   if(save()){closeSheet();renderAll();toast('Saved ✓')}
 });
 $('#btnDel').addEventListener('click',()=>{
   const d=$('#inDate').value;
-  if(!state.entries[d])return;
-  if(!confirm(`Delete the entry for ${fmtLong(d)}?`))return;
-  delete state.entries[d];save();closeSheet();renderAll();toast('Deleted');
+  if(!currentEditId||!state.entries[d])return;
+  if(!confirm('Delete this entry?'))return;
+  state.entries[d]=state.entries[d].filter(e=>e.id!==currentEditId);
+  if(!state.entries[d].length) delete state.entries[d];
+  currentEditId=null;
+  save();closeSheet();renderAll();toast('Deleted');
 });
-$('#btnAdd').addEventListener('click',()=>openEditor(todayStr()));
-$('#calGrid').addEventListener('click',e=>{const b=e.target.closest('.day');if(b&&!b.disabled)openEditor(b.dataset.date)});
-$('#histList').addEventListener('click',e=>{const b=e.target.closest('.row');if(b)openEditor(b.dataset.date)});
+$('#btnAdd').addEventListener('click',()=>openEditor(todayStr(),null));
+$('#calGrid').addEventListener('click',e=>{const b=e.target.closest('.day');if(b&&!b.disabled)openEditor(b.dataset.date,null)});
+$('#histList').addEventListener('click',e=>{const b=e.target.closest('.row');if(b)openEditor(b.dataset.date,b.dataset.id)});
 
 /* ---------- settings ---------- */
 $('#btnSettings').addEventListener('click',()=>{
@@ -554,7 +639,7 @@ $('#btnSaveSettings').addEventListener('click',()=>{
   if(save()){closeSheet();renderAll();toast('Settings saved ✓')}
 });
 $('#btnExport').addEventListener('click',async()=>{
-  const n=Object.keys(state.entries).length;
+  const n=flatAll().length;
   if(!n){toast('Nothing to back up yet');return}
   const json=JSON.stringify({app:'my-weight',version:1,exported:new Date().toISOString(),...state},null,2);
   const name=`weight-backup-${todayStr()}.json`;
@@ -572,9 +657,16 @@ $('#fileImport').addEventListener('change',async e=>{
   try{
     const d=JSON.parse(await f.text());
     if(!d||typeof d.entries!=='object')throw 0;
+    const imported=migrateEntries(d.entries);
     let n=0;
-    for(const [k,v] of Object.entries(d.entries)){
-      if(/^\d{4}-\d{2}-\d{2}$/.test(k)&&v&&+v.w>=20&&+v.w<=300){state.entries[k]={w:Math.round(+v.w*10)/10,note:String(v.note||'').slice(0,80)};n++}
+    for(const k of Object.keys(imported)){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(k))continue;
+      const existing=state.entries[k]||[];
+      for(const e of imported[k]){
+        const dup=existing.some(x=>x.time===e.time&&Math.abs(x.w-e.w)<0.05);
+        if(!dup){existing.push({...e,id:genId()});n++}
+      }
+      if(existing.length) state.entries[k]=existing;
     }
     if(d.goal!=null&&state.goal==null&&+d.goal>=20&&+d.goal<=300)state.goal=+d.goal;
     if(d.name&&!state.name)state.name=String(d.name).slice(0,24);
